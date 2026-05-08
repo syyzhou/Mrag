@@ -2,9 +2,9 @@
 set -euo pipefail
 
 MODEL_PATH="./Qwen2.5-3B"
-TRAIN_FILE="./datasets/nyc/preprocessed/train_qa_pairs_kqt_candidates_target_poi_multiview_dst_time_layered12_far3_mismatch3_tail2.json"
-TEST_FILE="./datasets/nyc/preprocessed/test_qa_pairs_kqt_candidates_target_poi_multiview_dst_time_layered12_far3_mismatch3_tail2.txt"
-OUTPUT_DIR="./output/two-router-target-poi-multiview-dst-time-layered12-far3-mismatch3-tail2"
+TRAIN_FILE="./datasets/nyc/preprocessed/train_dst_time_layered12_far3_mismatch3_tail2_ep200.json"
+TEST_FILE="./datasets/nyc/preprocessed/test_dst_time_layered12_far3_mismatch3_tail2_ep200.txt"
+OUTPUT_DIR="./output/two-router-dst-time-layered12-far3-mismatch3-tail2_ep200"
 SEQ_LEN=4096
 DATASET_NAME="nyc"
 THRESHOLD_MIB="${THRESHOLD_MIB:-20000}"
@@ -106,9 +106,9 @@ if [[ -n "${TRAIN_TRAJ_EMB}" ]]; then
   TRAIN_CMD+=(--trajectory_embedding_path "${TRAIN_TRAJ_EMB}")
 fi
 
-# echo "Starting training..."
-# "${TRAIN_CMD[@]}"
-# echo "Training finished."
+echo "Starting training..."
+"${TRAIN_CMD[@]}"
+echo "Training finished."
 
 GPU_INFO_AFTER="$(wait_for_gpu evaluation)"
 GPU_ID_AFTER="$(echo "$GPU_INFO_AFTER" | cut -d',' -f1)"

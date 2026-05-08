@@ -26,8 +26,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from poi_data_loader import load_full_dataset  # noqa: E402
-from transition_graph import TimeBucketManager  # noqa: E402
+LEGACY_RAG_ROOT = os.path.abspath(os.path.join(ROOT, "..", "rag"))
+if LEGACY_RAG_ROOT not in sys.path:
+    sys.path.insert(0, LEGACY_RAG_ROOT)
+
+from retrieval_utils import TimeBucketManager, load_full_dataset  # noqa: E402
 
 
 def str2bool(value):
@@ -807,4 +810,116 @@ def train(args):
     )
     val_loader = DataLoader(
         MultiViewDataset(val_samples),
-        batch_size=args.eval_b
+        batch_size=args.eval_batch_size,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate_fn,
+    )
+
+    model = MultiViewPOIRetriever(
+        sem_vectors,
+        geo_features,
+        args.hidden_size,
+        args.dropout,
+        fusion_type=args.fusion_type,
+        fusion_heads=args.fusion_heads,
+        graph_alignment=args.graph_alignment,
+        graph_align_heads=args.graph_align_heads,
+    ).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, args.epochs))
+
+    best_recall20 = -1.0
+    history = []
+    print(f"[target-poi-multiview] train={len(train_samples)} val={len(val_samples)} pois={len(all_pois)}")
+    print(
+        f"[target-poi-multiview] hidden={args.hidden_size} "
+        f"fusion={args.fusion_type} graph_alignment={args.graph_alignment} "
+        f"align_weight={args.align_weight}"
+    )
+
+    for epoch in range(1, args.epochs + 1):
+        model.train()
+        sums = defaultdict(float)
+        steps = 0
+        for batch in tqdm(train_loader, desc=f"epoch {epoch}"):
+            batch = move_batch(batch, device)
+            opt.zero_grad()
+            out = model(batch)
+            loss, logs = compute_loss(model, out, batch["target"], args)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            opt.step()
+            for k, v in logs.items():
+                sums[k] += float(v)
+            steps += 1
+        sched.step()
+
+        train_logs = {k: v / max(1, steps) for k, v in sums.items()}
+        val_metrics = evaluate(model, val_loader, device=device)
+        row = {"epoch": epoch, **train_logs, **val_metrics}
+        history.append(row)
+        print(
+            f"[target-poi-multiview] epoch={epoch} "
+            f"loss={row['loss']:.4f} fused={row['loss_fused']:.4f} "
+            f"rank={row['loss_rank']:.4f} align={row['loss_align']:.4f} "
+            f"recall@1={row['recall@1']:.4f} recall@5={row['recall@5']:.4f} "
+            f"recall@10={row['recall@10']:.4f} recall@20={row['recall@20']:.4f} "
+            f"gate=({row['gate_sem']:.2f},{row['gate_str']:.2f},{row['gate_traj']:.2f})"
+        )
+
+        if row["recall@20"] > best_recall20:
+            best_recall20 = row["recall@20"]
+            torch.save(model.state_dict(), os.path.join(args.save_dir, "model.pth"))
+
+    with open(os.path.join(args.save_dir, "history.json"), "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+    with open(os.path.join(args.save_dir, "poi_id_list.json"), "w", encoding="utf-8") as f:
+        json.dump(all_pois, f, ensure_ascii=False)
+    torch.save(vars(args), os.path.join(args.save_dir, "config.pth"))
+    print(f"[target-poi-multiview] best recall@20={best_recall20:.4f}; saved to {args.save_dir}")
+
+
+def build_parser():
+    default_dataset = os.getenv("DATASET_NAME", "nyc")
+    default_data_dir = f"./datasets/{default_dataset}/preprocessed"
+    default_save_dir = f"./rag/target_poi_multiview/artifacts_dropout04_wd3e3_{default_dataset}"
+    p = argparse.ArgumentParser(description="Direct target-POI retrieval with semantic/structure/trajectory views.")
+    p.add_argument("--dataset_name", default=default_dataset)
+    p.add_argument("--train_csv", default=f"{default_data_dir}/train_sample.csv")
+    p.add_argument("--test_csv", default=f"{default_data_dir}/test_sample_with_traj.csv")
+    p.add_argument("--train_qa", default=f"{default_data_dir}/train_qa_pairs_kqt.json")
+    p.add_argument("--test_qa", default=f"{default_data_dir}/test_qa_pairs_kqt.json")
+    p.add_argument("--feature_cache", default=f"./rag/feature_cache/bert_{default_dataset}")
+    p.add_argument("--save_dir", default=default_save_dir)
+    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--hidden_size", type=int, default=128)
+    p.add_argument("--dropout", type=float, default=0.4)
+    p.add_argument("--fusion_type", choices=["gated", "cross_attn"], default="gated")
+    p.add_argument("--fusion_heads", type=int, default=4)
+    p.add_argument("--graph_alignment", choices=["none", "context_cross_attn"], default="none")
+    p.add_argument("--graph_align_heads", type=int, default=4)
+    p.add_argument("--max_seq_len", type=int, default=20)
+    p.add_argument("--max_graph_nodes", type=int, default=20)
+    p.add_argument("--max_train_samples", type=int, default=0)
+    p.add_argument("--max_val_samples", type=int, default=0)
+    p.add_argument("--epochs", type=int, default=80)
+    p.add_argument("--batch_size", type=int, default=128)
+    p.add_argument("--eval_batch_size", type=int, default=128)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--weight_decay", type=float, default=3e-3)
+    p.add_argument("--grad_clip", type=float, default=1.0)
+    p.add_argument("--temperature", type=float, default=0.07)
+    p.add_argument("--align_temperature", type=float, default=0.07)
+    p.add_argument("--traj_weight", type=float, default=0.1)
+    p.add_argument("--sem_weight", type=float, default=0.05)
+    p.add_argument("--str_weight", type=float, default=0.05)
+    p.add_argument("--align_weight", type=float, default=0.0)
+    p.add_argument("--rank_weight", type=float, default=0.0)
+    p.add_argument("--rank_margin", type=float, default=0.1)
+    p.add_argument("--hard_topk", type=int, default=20)
+    return p
+
+
+if __name__ == "__main__":
+    train(build_parser().parse_args())

@@ -63,42 +63,6 @@ def parse_last_poi(question):
     return int(traj[-1]["poi_id"]) if traj else None
 
 
-def build_history_poi_pool_from_question(question):
-    # Use only POIs that already appear in this sample's prompt context
-    # (current trajectory + historical trajectories before target time).
-    return sorted({int(poi_id) for _ts, poi_id, _cat, _cat_id in VISIT_RE.findall(question)})
-
-
-def build_global_poi_seen_before(ds, all_pois):
-    """Build globally time-aware POI pool index:
-    for each POI, keep its earliest observed epoch in the full dataset.
-    """
-    earliest = {}
-    trajectories = []
-    if hasattr(ds, "all_trajectories"):
-        trajectories = list(ds.all_trajectories.values())
-    elif hasattr(ds, "trajs"):
-        trajectories = ds.trajs
-    for traj in trajectories:
-        visits = getattr(traj, "visits", traj)
-        for v in visits:
-            if hasattr(v, "poi_id"):
-                pid = int(v.poi_id)
-            else:
-                pid = int(v["poi_id"])
-            if hasattr(v, "epoch"):
-                ep = int(v.epoch)
-            else:
-                ep = int(v["epoch"])
-            if pid not in earliest or ep < earliest[pid]:
-                earliest[pid] = ep
-    return [(pid, earliest[pid]) for pid in all_pois if pid in earliest]
-
-
-def global_pool_before_epoch(global_poi_first_seen, target_epoch):
-    return [pid for pid, first_seen in global_poi_first_seen if first_seen < int(target_epoch)]
-
-
 def load_poi_info(poi_info_csv, poi_desc_csv, train_rows, test_rows):
     poi_info = defaultdict(lambda: {"lat": None, "lng": None, "category": "Unknown", "cat_id": None})
     if poi_info_csv and os.path.exists(poi_info_csv):
@@ -219,16 +183,13 @@ def build_export_samples(raw_rows, p2i, tm, graph_builder, max_seq_len):
 
 
 @torch.no_grad()
-def retrieve_candidates_and_queries(model, loader, idx_to_poi, device, top_k):
+def retrieve_candidates(model, loader, idx_to_poi, device, top_k):
     model.eval()
     all_poi = model.poi_encoder.all_embeddings()
     rows = []
-    fused_queries = []
     for batch in tqdm(loader, desc="retrieve"):
         batch = mv.move_batch(batch, device)
-        outputs = model(batch)
-        query = outputs["fused"]
-        scores = query @ all_poi.t()
+        scores = model(batch)["fused"] @ all_poi.t()
         vals, inds = scores.topk(top_k, dim=-1)
         for b in range(inds.size(0)):
             rows.append(
@@ -241,8 +202,7 @@ def retrieve_candidates_and_queries(model, loader, idx_to_poi, device, top_k):
                     for j in range(inds.size(1))
                 ]
             )
-            fused_queries.append(query[b].detach().cpu())
-    return rows, fused_queries
+    return rows
 
 
 def add_unique(out, seen, cand):
@@ -265,39 +225,46 @@ def build_category_index(poi_info, all_pois):
     return by_cat
 
 
-def target_category_key(target, poi_info):
-    info = poi_info.get(int(target), {}) if target is not None else {}
+def poi_category_key(poi_id, poi_info):
+    info = poi_info.get(int(poi_id), {}) if poi_id is not None else {}
     return info.get("cat_id") if info.get("cat_id") is not None else (info.get("category") or "Unknown")
 
 
-def build_far_same_category(target, last_poi, poi_info, candidate_pool, seen, k, min_km):
-    key = target_category_key(target, poi_info)
+def retrieval_top_category_keys(retrieval_rows, poi_info, top_n=5, max_categories=2):
+    keys = []
+    for cand in retrieval_rows[:top_n]:
+        key = poi_category_key(cand.get("poi_id"), poi_info)
+        if key not in keys:
+            keys.append(key)
+        if len(keys) >= max_categories:
+            break
+    return keys
+
+
+def build_far_same_category(last_poi, poi_info, category_index, reference_keys, seen, k, min_km):
     pool = []
-    for pid in candidate_pool:
-        if pid == target or pid in seen:
-            continue
-        info = poi_info.get(int(pid), {})
-        pid_key = info.get("cat_id") if info.get("cat_id") is not None else (info.get("category") or "Unknown")
-        if pid_key != key:
-            continue
-        dist = distance_from_last(pid, last_poi, poi_info)
-        if dist is None:
-            continue
-        pool.append((dist, pid))
+    for key in reference_keys:
+        for pid in category_index.get(key, []):
+            if pid == last_poi or pid in seen:
+                continue
+            dist = distance_from_last(pid, last_poi, poi_info)
+            if dist is None:
+                continue
+            pool.append((dist, pid))
     far = [(dist, pid) for dist, pid in pool if dist >= min_km]
     ranked = sorted(far or pool, key=lambda x: (-x[0], x[1]))
     return [{"poi_id": pid, "source": "far_same_category"} for dist, pid in ranked[:k]]
 
 
-def build_category_mismatch(target, last_poi, poi_info, candidate_pool, seen, k, rng):
-    target_key = target_category_key(target, poi_info)
+def build_category_mismatch(reference_keys, last_poi, poi_info, all_pois, seen, k, rng):
+    reference_keys = set(reference_keys)
     pool = []
-    for pid in candidate_pool:
-        if pid == target or pid in seen:
+    for pid in all_pois:
+        if pid == last_poi or pid in seen:
             continue
         info = poi_info.get(int(pid), {})
         key = info.get("cat_id") if info.get("cat_id") is not None else (info.get("category") or "Unknown")
-        if key == target_key:
+        if key in reference_keys:
             continue
         dist = distance_from_last(pid, last_poi, poi_info)
         if dist is None or dist >= 3.0:
@@ -319,46 +286,42 @@ def build_tail_candidates(retrieval_rows, seen, k, rng, min_rank):
     return out
 
 
-def random_fill(candidate_pool, seen, k, rng):
-    pool = [pid for pid in candidate_pool if pid not in seen]
+def random_fill(all_pois, seen, k, rng):
+    pool = [pid for pid in all_pois if pid not in seen]
     rng.shuffle(pool)
     return [{"poi_id": pid, "source": "random_fill"} for pid in pool[:k]]
 
 
-def score_and_rank_final(final_rows, query_vec, poi_embed, p2i):
-    raw_scores = []
-    for cand in final_rows:
-        pid = int(cand["poi_id"])
-        score = float(torch.dot(query_vec, poi_embed[p2i[pid]].cpu()).item())
-        cand["score_raw_global"] = score
-        raw_scores.append(score)
+def merge_random_inserts(strong, far_candidates, mismatch_candidates, tail_candidates, fill_candidates, top_k, rng):
+    """Preserve retrieval order, and randomly insert all supplementary candidates."""
+    strong = strong[:top_k]
+    supplements = far_candidates + mismatch_candidates + tail_candidates + fill_candidates
+    supplements = supplements[: max(0, top_k - len(strong))]
+    rng.shuffle(supplements)
 
-    lo = min(raw_scores) if raw_scores else 0.0
-    hi = max(raw_scores) if raw_scores else 0.0
-    denom = hi - lo
-    for i, cand in enumerate(final_rows, start=1):
-        if denom <= 1e-12:
-            norm = 1.0 if cand["score_raw_global"] == hi else 0.0
-        else:
-            norm = (cand["score_raw_global"] - lo) / denom
-            norm = max(0.0, min(1.0, norm))
-        cand["score_norm"] = float(norm)
-        cand["rank"] = i
-    return final_rows
+    num_sup = len(supplements)
+    sup_positions = set(rng.sample(range(top_k), num_sup)) if num_sup > 0 else set()
+
+    merged = []
+    i_strong = 0
+    i_sup = 0
+    for pos in range(top_k):
+        use_sup = pos in sup_positions and i_sup < len(supplements)
+        if use_sup:
+            merged.append(supplements[i_sup])
+            i_sup += 1
+        elif i_strong < len(strong):
+            merged.append(strong[i_strong])
+            i_strong += 1
+        elif i_sup < len(supplements):
+            merged.append(supplements[i_sup])
+            i_sup += 1
+    return merged[:top_k]
 
 
-def build_layered_scored(
-    row, raw_idx, retrieval_rows, query_vec, all_pois, poi_info, category_index, args, poi_embed, p2i, use_top12=False
-):
+def build_layered(row, raw_idx, retrieval_rows, all_pois, poi_info, category_index, args, use_top12=False):
     rng = random.Random(args.random_seed + int(raw_idx))
-    target = parse_target(row.get("answer", ""))
     last_poi = parse_last_poi(row.get("question", ""))
-    # Keep old local helper for compatibility, but use global time-aware pool by default.
-    _local_history_pool = build_history_poi_pool_from_question(row.get("question", ""))
-    traj, target_epoch, _target_hour, _target_dow = mv.parse_qa_sample(row.get("question", ""))
-    if target_epoch is None and traj:
-        target_epoch = int(traj[-1]["epoch"])
-    history_pool = global_pool_before_epoch(args.global_poi_first_seen, int(target_epoch)) if target_epoch is not None else list(all_pois)
     top20 = [dict(c) for c in retrieval_rows[:20]]
 
     if use_top12:
@@ -368,41 +331,66 @@ def build_layered_scored(
         rng.shuffle(selected_top)
         selected_top = selected_top[: args.strong_k]
         selected_top = sorted(selected_top, key=lambda x: int(x.get("retrieval_rank", 10**9)))
+
+    out, seen = [], set()
     for cand in selected_top:
         cand["source"] = "retrieved_strong"
-
-    out = []
-    seen = set()
-    for cand in selected_top:
         add_unique(out, seen, cand)
 
-    supplements = []
-    for cand in build_far_same_category(target, last_poi, poi_info, history_pool, seen, args.far_same_category_k, args.far_min_km):
+    reference_keys = retrieval_top_category_keys(
+        top20,
+        poi_info,
+        top_n=args.category_reference_top_k,
+        max_categories=args.category_reference_max_categories,
+    )
+
+    far_candidates = []
+    for cand in build_far_same_category(last_poi, poi_info, category_index, reference_keys, seen, args.far_same_category_k, args.far_min_km):
         if int(cand["poi_id"]) not in seen:
-            supplements.append(cand)
+            far_candidates.append(cand)
             seen.add(int(cand["poi_id"]))
-    for cand in build_category_mismatch(target, last_poi, poi_info, history_pool, seen, args.category_mismatch_k, rng):
+
+    mismatch_candidates = []
+    for cand in build_category_mismatch(reference_keys, last_poi, poi_info, all_pois, seen, args.category_mismatch_k, rng):
         if int(cand["poi_id"]) not in seen:
-            supplements.append(cand)
+            mismatch_candidates.append(cand)
             seen.add(int(cand["poi_id"]))
+
+    tail_candidates = []
     for cand in build_tail_candidates(retrieval_rows, seen, args.tail_k, rng, args.tail_min_rank):
         if int(cand["poi_id"]) not in seen:
-            supplements.append(cand)
+            tail_candidates.append(cand)
             seen.add(int(cand["poi_id"]))
 
-    if len(out) + len(supplements) < args.top_k:
-        for cand in random_fill(history_pool, seen, args.top_k - len(out) - len(supplements), rng):
+    supplements_count = len(far_candidates) + len(mismatch_candidates) + len(tail_candidates)
+    fill_candidates = []
+    if len(out) + supplements_count < args.top_k:
+        for cand in random_fill(all_pois, seen, args.top_k - len(out) - supplements_count, rng):
             if int(cand["poi_id"]) not in seen:
-                supplements.append(cand)
+                fill_candidates.append(cand)
                 seen.add(int(cand["poi_id"]))
 
-    supplements = supplements[: max(0, args.top_k - len(out))]
-    rng.shuffle(supplements)
-    # Keep retrieval candidates in front, then append all supplementary/random candidates.
-    out.extend(supplements)
-    out = out[: args.top_k]
+    merged = merge_random_inserts(
+        out[: args.top_k],
+        far_candidates,
+        mismatch_candidates,
+        tail_candidates,
+        fill_candidates,
+        args.top_k,
+        rng,
+    )
 
-    return score_and_rank_final(out, query_vec, poi_embed, p2i)
+    # If still not full (rare), append random_fill candidates.
+    if len(merged) < args.top_k:
+        for cand in random_fill(all_pois, seen, args.top_k - len(merged), rng):
+            merged.append(cand)
+            if len(merged) >= args.top_k:
+                break
+
+    out = merged[: args.top_k]
+    for i, cand in enumerate(out, start=1):
+        cand["rank"] = i
+    return out
 
 
 def build_augmented_rows(raw_rows, candidate_map, poi_info):
@@ -451,7 +439,7 @@ def save_txt(rows, path):
 def main():
     default_dataset = os.getenv("DATASET_NAME", "nyc")
     default_data_dir = f"./datasets/{default_dataset}/preprocessed"
-    default_tag = "dst_time_layered12_far3_mismatch3_tail2_scored_histpool"
+    default_tag = "dst_time_layered12_far3_mismatch3_tail2"
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_name", default=default_dataset)
     parser.add_argument("--candidate_tag", default=default_tag)
@@ -462,8 +450,8 @@ def main():
     parser.add_argument("--test_qa_for_dataset", default=None)
     parser.add_argument("--poi_info", default=None)
     parser.add_argument("--poi_desc", default=None)
-    parser.add_argument("--feature_cache", default="./rag/feature_cache/bert")
-    parser.add_argument("--artifact_dir", default="./rag/target_poi_multiview/artifacts_dropout04_wd3e3_dst_time")
+    parser.add_argument("--feature_cache", default=f"./rag/feature_cache/bert_{default_dataset}")
+    parser.add_argument("--artifact_dir", default=f"./rag/target_poi_multiview/artifacts_dropout04_wd3e3_{default_dataset}")
     parser.add_argument("--model_path", default=None)
     parser.add_argument("--train_output", default=None)
     parser.add_argument("--test_output", default=None)
@@ -476,12 +464,16 @@ def main():
     parser.add_argument("--tail_k", type=int, default=2)
     parser.add_argument("--tail_min_rank", type=int, default=101)
     parser.add_argument("--far_min_km", type=float, default=10.0)
+    parser.add_argument("--category_reference_top_k", type=int, default=5)
+    parser.add_argument("--category_reference_max_categories", type=int, default=2)
     parser.add_argument("--random_seed", type=int, default=42)
     parser.add_argument("--hidden_size", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.4)
     parser.add_argument("--max_seq_len", type=int, default=20)
     parser.add_argument("--max_graph_nodes", type=int, default=20)
     parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--train_use_top12", action="store_true")
+    parser.add_argument("--test_use_top12", action="store_true")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
     data_dir = f"./datasets/{args.dataset_name}/preprocessed"
@@ -494,10 +486,10 @@ def main():
     args.poi_info = args.poi_info or f"{data_dir}/poi_info.csv"
     args.poi_desc = args.poi_desc or f"{data_dir}/poi_desc_with_id.csv"
     args.train_output = args.train_output or (
-        f"{data_dir}/train_qa_pairs_kqt_candidates_target_poi_multiview_{tag}.json"
+        f"{data_dir}/train_{tag}.json"
     )
     args.test_output = args.test_output or (
-        f"{data_dir}/test_qa_pairs_kqt_candidates_target_poi_multiview_{tag}.txt"
+        f"{data_dir}/test_{tag}.txt"
     )
     args.stats_output = args.stats_output or f"{data_dir}/target_poi_multiview_{tag}_stats.json"
 
@@ -545,27 +537,23 @@ def main():
         graph_align_residual=getattr(args, "graph_align_residual", True),
     ).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
-
     train_loader = DataLoader(mv.MultiViewDataset(train_samples), batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=mv.collate_fn)
     test_loader = DataLoader(mv.MultiViewDataset(test_samples), batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=mv.collate_fn)
-
-    train_retrieval, train_queries = retrieve_candidates_and_queries(model, train_loader, idx_to_poi, device, args.retrieval_top_k)
-    test_retrieval, test_queries = retrieve_candidates_and_queries(model, test_loader, idx_to_poi, device, args.retrieval_top_k)
-    poi_embed = model.poi_encoder.all_embeddings().detach().cpu()
+    train_retrieval = retrieve_candidates(model, train_loader, idx_to_poi, device, args.retrieval_top_k)
+    test_retrieval = retrieve_candidates(model, test_loader, idx_to_poi, device, args.retrieval_top_k)
 
     category_index = build_category_index(poi_info, all_pois)
-    args.global_poi_first_seen = build_global_poi_seen_before(ds, all_pois)
     train_candidate_map = {
-        raw_idx: build_layered_scored(
-            train_rows[raw_idx], raw_idx, cands, qvec, all_pois, poi_info, category_index, args, poi_embed, p2i, use_top12=False
+        raw_idx: build_layered(
+            train_rows[raw_idx], raw_idx, cands, all_pois, poi_info, category_index, args, use_top12=args.train_use_top12
         )
-        for raw_idx, cands, qvec in zip(train_raw_indices, train_retrieval, train_queries)
+        for raw_idx, cands in zip(train_raw_indices, train_retrieval)
     }
     test_candidate_map = {
-        raw_idx: build_layered_scored(
-            test_rows[raw_idx], raw_idx, cands, qvec, all_pois, poi_info, category_index, args, poi_embed, p2i, use_top12=True
+        raw_idx: build_layered(
+            test_rows[raw_idx], raw_idx, cands, all_pois, poi_info, category_index, args, use_top12=args.test_use_top12
         )
-        for raw_idx, cands, qvec in zip(test_raw_indices, test_retrieval, test_queries)
+        for raw_idx, cands in zip(test_raw_indices, test_retrieval)
     }
 
     train_out, train_stats = build_augmented_rows(train_rows, train_candidate_map, poi_info)
@@ -579,15 +567,14 @@ def main():
     save_txt(test_out, args.test_output)
     stats = {
         "rule": (
-            "layered strategy: train uses retrieval top20 random sample12, test uses retrieval top12; then + far3 + mismatch3 from history-only POI pool and tail2 from retriever; "
-            "supplementary candidates are placed after retrieval candidates; random fill is also from history-only POI pool; "
-            "all candidate scores use global query-poi score, then min-max normalized within final 20; rank displayed as 1..20 by order"
+            "train: sample12 from retriever top20 + far3 + mismatch3 + tail2; "
+            "test: same layered rule (top12 if --test_use_top12 else random12); "
+            "supplementary candidates randomly inserted while preserving retrieval relative order"
         ),
         "model_path": model_path,
         "artifact_dir": str(artifact_dir),
         "random_seed": args.random_seed,
         "retrieval_top_k": args.retrieval_top_k,
-        "far_min_km": args.far_min_km,
         "train": train_stats,
         "test": test_stats,
         "outputs": {"train": args.train_output, "test": args.test_output},

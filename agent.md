@@ -39,10 +39,10 @@
 每个 POI embedding 由三类信息融合得到：
 
 - trainable POI id embedding。
-- 缓存的语义向量，来自 `rag/feature_cache/bert/poi_sem_vectors.npy`。
-- 地理特征，来自 `rag/feature_cache/bert/poi_geo_features.npy`。
+- 缓存的语义向量，来自 `rag/feature_cache/bert_${DATASET_NAME}/poi_sem_vectors.npy`。
+- 地理特征，来自 `rag/feature_cache/bert_${DATASET_NAME}/poi_geo_features.npy`。
 
-feature cache 元信息记录在 `rag/feature_cache/bert/feature_meta.json`：
+feature cache 元信息记录在 `rag/feature_cache/bert_${DATASET_NAME}/feature_meta.json`：
 
 - 编码器：BERT。
 - POI 数量：4980。

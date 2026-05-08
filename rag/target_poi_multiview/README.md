@@ -12,7 +12,7 @@ The model uses one shared POI encoder for target POI embeddings. Each POI
 embedding is built from:
 
 - trainable POI id embedding
-- cached LLM/text/category vector projection from `rag/feature_cache/bert`
+- cached LLM/text/category vector projection from `rag/feature_cache/bert_${DATASET_NAME}`
 - cached geographic feature projection
 
 Views:
@@ -37,7 +37,7 @@ python rag/target_poi_multiview/train.py \
   --test_csv ./datasets/${DATASET_NAME}/preprocessed/test_sample_with_traj.csv \
   --train_qa ./datasets/${DATASET_NAME}/preprocessed/train_qa_pairs_kqt.json \
   --test_qa ./datasets/${DATASET_NAME}/preprocessed/test_qa_pairs_kqt.json \
-  --feature_cache ./rag/feature_cache/bert \
+  --feature_cache rag/feature_cache/bert_${DATASET_NAME} \
   --max_train_samples 512 \
   --max_val_samples 256 \
   --epochs 1 \

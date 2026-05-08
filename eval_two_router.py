@@ -38,7 +38,7 @@ def parse_config():
                         help='预编码的测试集轨迹向量路径 (.pt 或 .npy)')
     parser.add_argument('--device', type=str, default=None,
                         help='cuda device, e.g. cuda:0')
-    parser.add_argument('--max_new_tokens', type=int, default=5)
+    parser.add_argument('--max_new_tokens', type=int, default=30)
     parser.add_argument('--num_beams', type=int, default=5)
     parser.add_argument('--num_return_sequences', type=int, default=5)
     parser.add_argument('--repetition_penalty', type=float, default=1.176)

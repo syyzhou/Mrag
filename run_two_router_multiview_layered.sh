@@ -4,9 +4,9 @@ set -euo pipefail
 MODEL_PATH="./Qwen2.5-3B"
 SEQ_LEN=4096
 DATASET_NAME="${DATASET_NAME:-nyc}"
-CANDIDATE_TAG="${CANDIDATE_TAG:-dst_time_layered12_far3_mismatch3_tail2_notop5insert}"
-TRAIN_FILE="./datasets/${DATASET_NAME}/preprocessed/train_qa_pairs_kqt_candidates_target_poi_multiview_${CANDIDATE_TAG}.json"
-TEST_FILE="./datasets/${DATASET_NAME}/preprocessed/test_qa_pairs_kqt_candidates_target_poi_multiview_${CANDIDATE_TAG}.txt"
+CANDIDATE_TAG="${CANDIDATE_TAG:-dst_time_layered12_far3_mismatch3_tail2}"
+TRAIN_FILE="./datasets/${DATASET_NAME}/preprocessed/train_${CANDIDATE_TAG}.json"
+TEST_FILE="./datasets/${DATASET_NAME}/preprocessed/test_${CANDIDATE_TAG}.txt"
 OUTPUT_DIR="./output/two-router-target-poi-multiview-${DATASET_NAME}-${CANDIDATE_TAG}"
 TRAIN_THRESHOLD_MIB="${TRAIN_THRESHOLD_MIB:-20000}"
 EVAL_THRESHOLD_MIB="${EVAL_THRESHOLD_MIB:-28000}"
@@ -118,8 +118,7 @@ run_retriever_pipeline_if_needed() {
     --train_output "${TRAIN_FILE}" \
     --test_output "${TEST_FILE}" \
     --stats_output "./datasets/${DATASET_NAME}/preprocessed/target_poi_multiview_${CANDIDATE_TAG}_stats.json" \
-    --test_use_top12 \
-    --disable_top5_insert
+    --test_use_top12
 
   if [[ ! -f "${TRAIN_FILE}" || ! -f "${TEST_FILE}" ]]; then
     echo "[$(timestamp)] ERROR: candidate export failed. train/test file not found after export." | tee -a "${STATUS_LOG}" >&2
