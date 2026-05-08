@@ -1,0 +1,21 @@
+{
+  "fact_source": "all_trajectories(fallback)",
+  "train": {
+    "num_samples": 11022,
+    "num_valid": 11022,
+    "unique_mean": 14.905008165487207,
+    "unique_median": 6.0,
+    "unique_p90": 26.0,
+    "unique_max": 449,
+    "unique_zero_ratio": 0.053347849755035384
+  },
+  "test": {
+    "num_samples": 1447,
+    "num_valid": 1447,
+    "unique_mean": 25.53213545266068,
+    "unique_median": 11.0,
+    "unique_p90": 38.0,
+    "unique_max": 450,
+    "unique_zero_ratio": 0.0
+  }
+}

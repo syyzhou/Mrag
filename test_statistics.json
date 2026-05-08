@@ -1,0 +1,16 @@
+{
+  "test": {
+    "num_users": 3,
+    "total_positives": 0,
+    "mean_positives": 0.0,
+    "median_positives": 0.0,
+    "max_positives": 0,
+    "min_positives": 0,
+    "std_positives": 0.0,
+    "counts": [
+      0,
+      0,
+      0
+    ]
+  }
+}

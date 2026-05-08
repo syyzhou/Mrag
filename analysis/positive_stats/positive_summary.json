@@ -1,0 +1,36 @@
+{
+  "rule": "positive sources are POIs with source->target transition facts under same bucket",
+  "train_rule": "sources_before(bucket, target_poi, sample_target_time)",
+  "test_rule": "sources_all(bucket, target_poi)",
+  "fact_scope_requested": "train",
+  "fact_scope_used": "all_trajectories(fallback)",
+  "fact_edges": 72206,
+  "train": {
+    "num_samples": 11022,
+    "num_valid": 11022,
+    "num_invalid": 0,
+    "unique_mean": 3.4933768825984397,
+    "unique_median": 2.0,
+    "unique_p90": 7.0,
+    "unique_max": 92,
+    "unique_zero_ratio": 9.072763563781528e-05,
+    "fact_mean": 6.463799673380512,
+    "fact_median": 3.0,
+    "fact_p90": 14.0,
+    "fact_max": 200
+  },
+  "test": {
+    "num_samples": 1447,
+    "num_valid": 1429,
+    "num_invalid": 18,
+    "unique_mean": 4.01259622113366,
+    "unique_median": 2.0,
+    "unique_p90": 7.0,
+    "unique_max": 92,
+    "unique_zero_ratio": 0.22393282015395383,
+    "fact_mean": 7.855143456962911,
+    "fact_median": 2.0,
+    "fact_p90": 18.0,
+    "fact_max": 201
+  }
+}

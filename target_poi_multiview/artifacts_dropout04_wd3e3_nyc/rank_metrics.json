@@ -1,0 +1,26 @@
+{
+  "artifact_dir": "rag/target_poi_multiview/artifacts_dropout04_wd3e3_dst_time",
+  "model_path": "rag/target_poi_multiview/artifacts_dropout04_wd3e3_dst_time/model.pth",
+  "device": "cuda",
+  "batch_size": 256,
+  "train": {
+    "total": 11022,
+    "mrr_full": 0.9553126620848325,
+    "mrr_at_20": 0.955307800093616,
+    "mean_rank": 1.1259299582652875,
+    "recall@1": 0.9181636726546906,
+    "recall@5": 0.9978225367446925,
+    "recall@10": 0.9994556341861731,
+    "recall@20": 0.9998185447287243
+  },
+  "test": {
+    "total": 1429,
+    "mrr_full": 0.2404884034057361,
+    "mrr_at_20": 0.23754366533667828,
+    "mean_rank": 763.4513645906228,
+    "recall@1": 0.16515045486354094,
+    "recall@5": 0.3261021693491952,
+    "recall@10": 0.37648705388383485,
+    "recall@20": 0.4212736179146256
+  }
+}

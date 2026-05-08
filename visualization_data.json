@@ -1,0 +1,32 @@
+{
+  "datasets": {
+    "train_small": {
+      "total_records": 3,
+      "positive_samples": 3,
+      "negative_samples": 0,
+      "unique_users": 1,
+      "avg_pois_per_user": 1.0
+    },
+    "test_small": {
+      "total_records": 3,
+      "positive_samples": 3,
+      "negative_samples": 0,
+      "unique_users": 1,
+      "avg_pois_per_user": 1.0
+    },
+    "train_large": {
+      "total_records": 11022,
+      "positive_samples": 1000,
+      "negative_samples": 0,
+      "unique_users": 1,
+      "avg_pois_per_user": 1.0
+    },
+    "test_large": {
+      "total_records": 1447,
+      "positive_samples": 1000,
+      "negative_samples": 0,
+      "unique_users": 1,
+      "avg_pois_per_user": 1.0
+    }
+  }
+}

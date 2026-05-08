@@ -1,0 +1,30 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        
+        
+        
+    
+        {
+            "name": "Python 调试程序: 当前文件",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+             "args": [
+                "--train_csv", "./datasets/nyc/preprocessed/train_sample.csv",
+                "--test_csv", "./datasets/nyc/preprocessed/test_sample.csv",
+                "--train_qa", "./datasets/nyc/preprocessed/train_qa_pairs_kqt.json",
+                "--test_qa", "./datasets/nyc/preprocessed/test_qa_pairs_kqt.json",
+                // "--save_dir", "./struct_lib/",
+                "--output_dir", "./analysis/traj_positive_stats",
+                // "--top_k", "5",
+                // "--device", "cuda"
+            ]
+            
+        }
+    ]
+}

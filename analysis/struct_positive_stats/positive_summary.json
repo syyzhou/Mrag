@@ -1,0 +1,22 @@
+{
+  "pool_source": "all_trajectories(fallback)",
+  "positive_rule": "same bucket center with 1-hop neighbor containing target_poi",
+  "train": {
+    "num_samples": 11022,
+    "num_valid": 11022,
+    "mean": 0.472509526401742,
+    "median": 0.0,
+    "p90": 1.0,
+    "max": 13,
+    "zero_ratio": 0.7300852839774995
+  },
+  "test": {
+    "num_samples": 1447,
+    "num_valid": 1429,
+    "mean": 0.5192442267319805,
+    "median": 0.0,
+    "p90": 1.0,
+    "max": 13,
+    "zero_ratio": 0.7571728481455563
+  }
+}
