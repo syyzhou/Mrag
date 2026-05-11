@@ -356,6 +356,7 @@ class MoRa(nn.Module):
         self.use_hydra_lora = config.use_hydra_lora
         self.router1_use_shared_expert = getattr(config, "router1_use_shared_expert", False)
         self.router1_shared_expert_weight = getattr(config, "router1_shared_expert_weight", 1.0)
+        self.disable_router1 = getattr(config, "disable_router1", False)
         
         if self.use_hydra_lora:
             self.mora_a1 = nn.Parameter(torch.empty((self.rank, self.in_features), dtype=self.dtype_))
@@ -392,16 +393,17 @@ class MoRa(nn.Module):
 
         x = self.dropout(hidden_states)
 
-        # 专家组1（平均池化路由）
-        h1 = F.linear(x, self.mora_a1)
-        shape1 = h1.shape[:-1] + (self.num_experts, self.rank)
-        h1 = h1.unsqueeze(-2).expand(shape1) if self.use_hydra_lora else h1.view(shape1)
-        h1 = (h1 * gate1.unsqueeze(-1)).view(h1.shape[:-2] + (-1,))
-        out1 = F.linear(h1, self.mora_b1) * self.scaling
-        if self.router1_use_shared_expert:
-            shared_h1 = F.linear(x, self.shared_mora_a1)
-            shared_out1 = F.linear(shared_h1, self.shared_mora_b1) * self.scaling
-            out1 = out1 + self.router1_shared_expert_weight * shared_out1
+        if not self.disable_router1:
+            # 专家组1（平均池化路由）
+            h1 = F.linear(x, self.mora_a1)
+            shape1 = h1.shape[:-1] + (self.num_experts, self.rank)
+            h1 = h1.unsqueeze(-2).expand(shape1) if self.use_hydra_lora else h1.view(shape1)
+            h1 = (h1 * gate1.unsqueeze(-1)).view(h1.shape[:-2] + (-1,))
+            out1 = F.linear(h1, self.mora_b1) * self.scaling
+            if self.router1_use_shared_expert:
+                shared_h1 = F.linear(x, self.shared_mora_a1)
+                shared_out1 = F.linear(shared_h1, self.shared_mora_b1) * self.scaling
+                out1 = out1 + self.router1_shared_expert_weight * shared_out1
 
         # 专家组2（轨迹路由）
         h2 = F.linear(x, self.mora_a2)
@@ -410,10 +412,14 @@ class MoRa(nn.Module):
         h2 = (h2 * gate2.unsqueeze(-1)).view(h2.shape[:-2] + (-1,))
         out2 = F.linear(h2, self.mora_b2) * self.scaling
 
-        # 融合：w1*out1 + w2*out2
-        w1 = fusion[:, 0].unsqueeze(-1).unsqueeze(-1)
-        w2 = fusion[:, 1].unsqueeze(-1).unsqueeze(-1)
-        output = w1 * out1 + w2 * out2
+        if self.disable_router1:
+            # 消融：仅保留 router2 路径，不再使用 router1 / fusion
+            output = out2
+        else:
+            # 融合：w1*out1 + w2*out2
+            w1 = fusion[:, 0].unsqueeze(-1).unsqueeze(-1)
+            w2 = fusion[:, 1].unsqueeze(-1).unsqueeze(-1)
+            output = w1 * out1 + w2 * out2
 
         return output.to(residual.dtype) + residual
 
@@ -480,28 +486,36 @@ class AdapterLinear(nn.Module):
         if self.use_lora:
             return self.lora(hidden_states, result)
 
+        disable_router1 = getattr(self.mora, "disable_router1", False)
         if self.use_cache:
-            gate1 = self.router1.get_routing_weight()
             gate2 = self.router2.get_routing_weight()
-            fusion = self.fusion_gate_weight
+            if disable_router1:
+                gate1 = torch.zeros_like(gate2)
+                fusion = None
+            else:
+                gate1 = self.router1.get_routing_weight()
+                fusion = self.fusion_gate_weight
         else:
-            gate1 = self.router1(hidden_states)
             gate2 = self.router2(hidden_states)
-            
-            # ===== 获取轨迹向量传给 fusion_gate =====
-            traj_emb = None
-            if (self.router2 is not None 
-                and getattr(self.router2, 'use_trajectory', False)
-                and self.router2.traj_projector is not None):
-                traj_emb = self.router2.traj_projector._cached_traj_embedding
-            if self.router2 is not None and getattr(self.router2, "use_trajectory", False):
-                if traj_emb is None:
-                    raise RuntimeError(
-                        f"Trajectory embedding missing in AdapterLinear (router2 tag={getattr(self.router2, 'tag', None)}). "
-                        "This usually means projector cache was not set or was cleared before checkpoint recompute."
-                    )
-            fusion = self.fusion_gate(hidden_states, traj_emb)
-            self.fusion_gate_weight = fusion
+            if disable_router1:
+                gate1 = torch.zeros_like(gate2)
+                fusion = None
+            else:
+                gate1 = self.router1(hidden_states)
+                # ===== 获取轨迹向量传给 fusion_gate =====
+                traj_emb = None
+                if (self.router2 is not None 
+                    and getattr(self.router2, 'use_trajectory', False)
+                    and self.router2.traj_projector is not None):
+                    traj_emb = self.router2.traj_projector._cached_traj_embedding
+                if self.router2 is not None and getattr(self.router2, "use_trajectory", False):
+                    if traj_emb is None:
+                        raise RuntimeError(
+                            f"Trajectory embedding missing in AdapterLinear (router2 tag={getattr(self.router2, 'tag', None)}). "
+                            "This usually means projector cache was not set or was cleared before checkpoint recompute."
+                        )
+                fusion = self.fusion_gate(hidden_states, traj_emb)
+                self.fusion_gate_weight = fusion
 
         return self.mora(hidden_states, gate1, gate2, fusion, result)
 
@@ -594,6 +608,7 @@ def _apply_for_layer(layer_module: nn.Module,
                               tag=f"{tag}_G1",
                               use_trajectory=False,
                               traj_projector=None)
+        router1.disabled_router = bool(getattr(config, "disable_router1", False))
         # router2：轨迹向量路由
         router2 = TokenRouter(config, input_dim, layer_id,
                               tag=f"{tag}_G2",
@@ -800,6 +815,8 @@ class RouterManager(nn.Module):
     def get_auxiliary_loss(self, loss, attention_mask, reduce='sum'):
         auxiliary_loss = []
         for router in self.token_routers:
+            if getattr(router, "disabled_router", False):
+                continue
             if self.use_load_balancing_loss:
                 auxiliary_loss.append(router.load_balancing_loss(attention_mask))
             elif self.use_div_loss:

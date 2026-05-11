@@ -91,6 +91,7 @@ class UmRaConfig:
     num_experts: int = 8
     router1_use_shared_expert: bool = False
     router1_shared_expert_weight: float = 1.0
+    disable_router1: bool = False
     # task encoder and task embedding
     use_causal_attention = False
     trainable_encoder: bool = True
@@ -111,6 +112,9 @@ class UmRaConfig:
     trajectory_dim: int = 2048  # 预编码向量的维度，应与LLM hidden_dim一致
     trajectory_fusion_mode: str = "gate"  # gate / add / concat_proj / cross_attention
     share_traj_projector: bool = True  # 所有层共享一个投影器
+    use_retrieval_query_routing: bool = False
+    retrieval_query_path: str = None
+    retrieval_query_dim: int = 2048
 
     @staticmethod
     def from_config(config: Dict[str, any]) -> "UmRaConfig":
